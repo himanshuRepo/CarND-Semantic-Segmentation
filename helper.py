@@ -10,7 +10,7 @@ import tensorflow as tf
 from glob import glob
 from urllib.request import urlretrieve
 from tqdm import tqdm
-
+from moviepy.editor import VideoFileClip
 
 class DLProgress(tqdm):
     last_block = 0
@@ -76,7 +76,8 @@ def gen_batch_function(data_folder, image_shape):
             re.sub(r'_(lane|road)_', '_', os.path.basename(path)): path
             for path in glob(os.path.join(data_folder, 'gt_image_2', '*_road_*.png'))}
         background_color = np.array([255, 0, 0])
-
+        black = np.array([0, 0, 0])
+        pink = np.array([255, 0, 255])
         random.shuffle(image_paths)
         for batch_i in range(0, len(image_paths), batch_size):
             images = []
@@ -90,7 +91,11 @@ def gen_batch_function(data_folder, image_shape):
                 gt_bg = np.all(gt_image == background_color, axis=2)
                 gt_bg = gt_bg.reshape(*gt_bg.shape, 1)
                 gt_image = np.concatenate((gt_bg, np.invert(gt_bg)), axis=2)
-
+                # gt_pink = np.all(gt_image == pink, axis=2)
+                # gt_pink = gt_pink.reshape(*gt_pink.shape, 1)
+                # gt_black = np.all(gt_image == black, axis=2)
+                # gt_black = gt_black.reshape(*gt_black.shape, 1)
+                # gt_image = np.concatenate((np.invert(gt_pink +gt_black), gt_black, gt_pink), axis=2)
                 images.append(image)
                 gt_images.append(gt_image)
 
@@ -115,9 +120,11 @@ def gen_test_output(sess, logits, keep_prob, image_pl, data_folder, image_shape)
         im_softmax = sess.run(
             [tf.nn.softmax(logits)],
             {keep_prob: 1.0, image_pl: [image]})
-        im_softmax = im_softmax[0][:, 1].reshape(image_shape[0], image_shape[1])
-        segmentation = (im_softmax > 0.5).reshape(image_shape[0], image_shape[1], 1)
-        mask = np.dot(segmentation, np.array([[0, 255, 0, 127]]))
+       # im_softmax = im_softmax[0][:, 0].reshape(image_shape[0], image_shape[1])
+
+       # segmentation = (im_softmax > 0.5).reshape(image_shape[0], image_shape[1], 1)
+        segmentation = np.argmax(im_softmax[0],axis=1).reshape(image_shape[0],image_shape[1], 1)
+        mask = np.dot((segmentation == 1), np.array([[255, 0, 255, 127]])) #+ np.dot((segmentation == 2), np.array([[0, 255, 0, 127]]))
         mask = scipy.misc.toimage(mask, mode="RGBA")
         street_im = scipy.misc.toimage(image)
         street_im.paste(mask, box=None, mask=mask)
@@ -138,3 +145,39 @@ def save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_p
         sess, logits, keep_prob, input_image, os.path.join(data_dir, 'data_road/testing'), image_shape)
     for name, image in image_outputs:
         scipy.misc.imsave(os.path.join(output_dir, name), image)
+
+
+def save_inference_video(sourceFile, targetFile, sess, image_shape, logits, keep_prob, input_image):
+    # Run NN on test images and save them to HD
+    clip = VideoFileClip(sourceFile, audio=False)
+    output_clip = clip.fx(gen_movie_output, sess, logits, keep_prob, input_image, image_shape)
+    output_clip.write_videofile(targetFile, audio=False)
+
+
+def gen_movie_output(clip, sess, logits, keep_prob, image_pl, image_shape):
+    """
+    Generate test output using the test images
+    :param sess: TF session
+    :param logits: TF Tensor for the logits
+    :param keep_prob: TF Placeholder for the dropout keep robability
+    :param image_pl: TF Placeholder for the image placeholder
+    :param data_folder: Path to the folder that contains the datasets
+    :param image_shape: Tuple - Shape of image
+    :return: Output for for each test image
+    """
+    def transformation(image):
+        image = scipy.misc.imresize(image, image_shape)
+
+        im_softmax = sess.run([tf.nn.softmax(logits)], {keep_prob: 1.0, image_pl: [image]})
+        # im_softmax = im_softmax[0][:, 0].reshape(image_shape[0], image_shape[1])
+
+        # segmentation = (im_softmax > 0.5).reshape(image_shape[0], image_shape[1], 1)
+        segmentation = np.argmax(im_softmax[0],axis=1).reshape(image_shape[0],image_shape[1], 1)
+        mask = np.dot((segmentation == 1), np.array([[255, 0, 255, 127]])) #+ np.dot((segmentation == 2), np.array([[0, 255, 0, 127]]))
+        mask = scipy.misc.toimage(mask, mode="RGBA")
+        street_im = scipy.misc.toimage(image)
+        street_im.paste(mask, box=None, mask=mask)
+
+        return np.array(street_im)
+    new_clip = clip.fl_image(transformation)
+    return new_clip
